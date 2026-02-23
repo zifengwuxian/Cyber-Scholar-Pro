@@ -10,8 +10,9 @@ import uuid
 import time
 import extra_streamlit_components as stx
 from datetime import datetime, timedelta
+import gc # 引入垃圾回收机制
 
-# ================= 1. 页面配置 =================
+# ================= 1. 页面基础配置 =================
 st.set_page_config(
     page_title="赛博学霸 Pro",
     page_icon="🧬",
@@ -27,6 +28,9 @@ st.markdown("""
     .answer-area {background-color: #1E1E1E; padding: 20px; border-radius: 8px; border-left: 5px solid #FFD700; color: #E0E0E0; font-family: sans-serif; line-height: 1.6;}
     [data-testid="stSidebar"] {background-color: #121212 !important; color: #FFFFFF !important;}
     .stTextInput input {background-color: #2C2C2C !important; color: #FFFFFF !important;}
+    
+    /* 隐藏图片上传后的默认文件名，让界面更清爽 */
+    .uploadedFile {display: none;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,7 +55,7 @@ SUBJECT_TASKS = {
 }
 
 # ================= 4. Cookie =================
-cookie_manager = stx.CookieManager(key="mobile_cookie")
+cookie_manager = stx.CookieManager(key="mobile_cookie_v3_6")
 
 # ================= 5. 验证逻辑 =================
 def connect_db():
@@ -110,32 +114,37 @@ def auto_login_check():
     except: pass
     return False, None
 
-# ================= 6. 图像处理与AI =================
+# ================= 6. 图像处理与AI (内存优化版) =================
 
-def process_image_mobile(image_obj):
-    """移动端图像优化：修正旋转 + 压缩尺寸 + 增强"""
-    # 1. 修正旋转
-    image_obj = ImageOps.exif_transpose(image_obj)
-    
-    # 2. 智能压缩 (防止内存溢出)
-    # 如果宽或高超过 1500px，按比例缩小，保证清晰度同时减少内存占用
-    max_size = 1500
-    if image_obj.width > max_size or image_obj.height > max_size:
-        image_obj.thumbnail((max_size, max_size))
+def process_image_safe(image_file):
+    """安全处理：压缩与增强，防止内存溢出"""
+    try:
+        image_file.seek(0)
+        img_obj = Image.open(image_file)
         
-    # 3. 增强对比度 (针对试卷文字)
-    enhancer = ImageEnhance.Contrast(image_obj)
-    image_obj = enhancer.enhance(1.5)
-    
-    return image_obj
+        # 1. 修正旋转 (手机拍照常见问题)
+        img_obj = ImageOps.exif_transpose(img_obj)
+        
+        # 2. 强力压缩：将宽/高限制在 1200px 以内
+        # 1200px 对于 OCR 足够清晰，但内存占用只有原图的 1/10
+        img_obj.thumbnail((1200, 1200))
+        
+        # 3. 增强对比度 (弥补压缩损失)
+        enhancer = ImageEnhance.Contrast(img_obj)
+        img_obj = enhancer.enhance(1.5)
+        
+        return img_obj
+    except Exception as e:
+        st.error(f"图片处理失败: {e}")
+        return None
 
 def ocr_general(image_obj, subject):
     if not ZHIPU_KEY: return "Error: Key未配置"
     client = ZhipuAI(api_key=ZHIPU_KEY)
     
     buffered = io.BytesIO()
-    # 存为 JPEG 且质量设为 85，进一步减小体积
-    image_obj.save(buffered, format="JPEG", quality=85)
+    # 存为 JPEG，质量 80，进一步省内存
+    image_obj.save(buffered, format="JPEG", quality=80) 
     img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
     
     prompt = f"""
@@ -186,7 +195,6 @@ with st.sidebar:
     st.markdown("## 🔐 赛博学霸通行证")
     if is_logged_in:
         st.success(f"🟢 已登录")
-        st.caption(f"ID: {current_user}")
         if st.button("🚪 安全退出", type="secondary", use_container_width=True):
             try: cookie_manager.delete('user_license')
             except: pass
@@ -212,7 +220,7 @@ with st.sidebar:
     st.divider()
     with st.expander("💎 开通会员", expanded=True):
         st.info("扫码支付后，截图加微信领卡密")
-        # 图片加载代码略
+        # 略过图片加载
 
 # 主界面
 st.markdown("<div class='main-title'>🧬 赛博学霸 Pro</div>", unsafe_allow_html=True)
@@ -220,82 +228,67 @@ st.markdown("<div class='sub-title'>DeepSeek × GLM-4V | 大学生/考研/科研
 
 if is_logged_in:
     with st.container(border=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            subject = st.selectbox("📚 选择专业", list(SUBJECT_TASKS.keys()))
-        with c2:
-            task = st.selectbox("📝 选择模式", SUBJECT_TASKS[subject])
+        # 手机端把科目选择放在上面
+        subject = st.selectbox("📚 选择专业", list(SUBJECT_TASKS.keys()))
+        task = st.selectbox("📝 选择模式", SUBJECT_TASKS[subject])
     
-    # ================= 📸 移动端终极解决方案 =================
+    # 📸 极简上传模块 (防闪退核心)
+    st.info("💡 **提示**：点击下方按钮 -> 选择【相机】拍摄更清晰。")
     
-    # 既然 Browse files 有时调不起相机，我们给两个入口
-    st.info("👇 **请根据您的需求选择上传方式**：")
-    
-    tab1, tab2 = st.tabs(["📂 浏览相册 (通用)", "📸 网页相机 (备用)"])
-    
-    final_image = None
-    
-    with tab1:
-        # 针对 Browse files，我们无法强制系统弹相机
-        # 但我们优化了后续的处理逻辑，保证大图不崩
-        uploaded_file = st.file_uploader(
-            "点击下方按钮选择图片 (支持高清图)", 
-            type=["jpg", "png", "jpeg"], 
-            key="file_uploader"
-        )
-        if uploaded_file: final_image = uploaded_file
-        
-    with tab2:
-        # 这是 Streamlit 原生的相机，虽然画质稍差，但胜在稳定
-        # 如果用户手机死活调不起系统相机，就让他用这个
-        camera_file = st.camera_input("直接调用网页相机")
-        if camera_file: final_image = camera_file
+    # 只保留一个入口，减少混淆
+    uploaded_file = st.file_uploader("📤 点击拍摄/上传题目", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
 
-    if final_image:
+    if uploaded_file:
         st.markdown("---")
-        # 不分栏，保证手机端大图显示
-        try:
-            img_obj = Image.open(final_image)
-            
-            # 🔥 核心：调用图像处理引擎 (防旋转+压缩+增强)
-            img_obj = process_image_mobile(img_obj)
-            
-            st.image(img_obj, caption="已自动增强画质", use_container_width=True)
-        except Exception as e:
-            st.error(f"图片加载失败: {e}")
-            st.stop()
         
-        if st.button("🚀 启动科研引擎", type="primary", use_container_width=True):
+        # 🔥 核心改变：不直接显示大图！只显示文件名和大小
+        # 这样浏览器就不会去渲染 10MB 的图片，从而避免闪退
+        file_size_mb = uploaded_file.size / (1024 * 1024)
+        st.success(f"✅ 图片已接收 ({file_size_mb:.2f} MB)")
+        
+        # 按钮也是大大的，方便点击
+        if st.button("🚀 立即开始分析", type="primary", use_container_width=True):
+            
+            # 进度条
             progress = st.progress(0)
             status = st.empty()
             
-            status.write("👀 视觉引擎正在提取信息...")
-            progress.progress(30)
+            # Step 1: 后台静默处理图片
+            status.write("⚙️ 正在优化图像画质...")
+            img_obj = process_image_safe(uploaded_file)
             
-            ocr_text = ocr_general(img_obj, subject)
-            
-            if "失败" not in ocr_text:
-                status.write(f"🧠 教授正在推导逻辑...")
-                progress.progress(70)
-                ai_result = ai_tutor_brain(ocr_text, subject, task)
+            if img_obj:
+                # 此时图片已经变小了，可以安全地展示一个小缩略图给用户看一眼
+                st.image(img_obj, caption="图像已增强", width=300) # 限制宽度
                 
-                progress.progress(100)
-                status.empty()
+                # Step 2: OCR
+                status.write("👀 视觉引擎正在提取信息...")
+                progress.progress(30)
+                ocr_text = ocr_general(img_obj, subject)
                 
-                with st.expander("🔍 原始文本", expanded=False):
-                    st.text(ocr_text)
+                # 内存回收
+                del img_obj
+                gc.collect()
                 
-                st.markdown(f"### 👩‍🏫 教授详细解析")
-                with st.container(border=True):
-                    st.markdown(ai_result)
-                st.balloons()
+                # Step 3: DeepSeek
+                if "失败" not in ocr_text:
+                    status.write(f"🧠 教授正在推导逻辑...")
+                    progress.progress(70)
+                    ai_result = ai_tutor_brain(ocr_text, subject, task)
+                    
+                    progress.progress(100)
+                    status.empty()
+                    
+                    with st.expander("🔍 查看识别的题目文本"):
+                        st.text(ocr_text)
+                    
+                    st.markdown(f"### 👩‍🏫 教授详细解析")
+                    with st.container(border=True):
+                        st.markdown(ai_result)
+                    st.balloons()
+                else:
+                    st.error("识别失败，请尝试重新拍摄更清晰的照片。")
             else:
-                st.error("图片太模糊，AI 看不清，请重拍。")
+                st.error("图片处理失败，请重试。")
 else:
     st.info("👋 欢迎！请在左侧输入卡密登录。")
-    st.markdown("""
-    ### 🚀 为什么你需要赛博学霸？
-    - **硬核学科**：高数、线代、模电、408... 
-    - **深度推导**：拒绝只有答案，提供完整推导过程。
-    - **考研神器**：随时随地的私人教授。
-    """)
