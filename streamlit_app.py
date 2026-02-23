@@ -54,7 +54,7 @@ GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
 GIST_ID = st.secrets.get("GIST_ID", "")
 ZHIPU_KEY = st.secrets.get("ZHIPU_KEY", "")
 DEEPSEEK_KEY = st.secrets.get("DEEPSEEK_KEY", "")
-MY_WECHAT = "Liao_Code_Master"
+MY_WECHAT = "liao13689209126"
 
 # ================= 3. 科目表 =================
 SUBJECT_TASKS = {
