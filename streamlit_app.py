@@ -10,27 +10,42 @@ import uuid
 import time
 import extra_streamlit_components as stx
 from datetime import datetime, timedelta
-import gc # 引入垃圾回收机制
+import gc
 
 # ================= 1. 页面基础配置 =================
 st.set_page_config(
     page_title="赛博学霸 Pro",
     page_icon="🧬",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-# 自定义 CSS
+# 自定义 CSS (精简版：只美化标题和答案区，不乱改按钮和背景)
 st.markdown("""
 <style>
-    .main-title {font-size: 2.2rem; color: #FFD700; text-align: center; font-weight: bold; text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);}
-    .sub-title {font-size: 1rem; color: #B0BEC5; text-align: center; margin-bottom: 20px;}
-    .answer-area {background-color: #1E1E1E; padding: 20px; border-radius: 8px; border-left: 5px solid #FFD700; color: #E0E0E0; font-family: sans-serif; line-height: 1.6;}
-    [data-testid="stSidebar"] {background-color: #121212 !important; color: #FFFFFF !important;}
-    .stTextInput input {background-color: #2C2C2C !important; color: #FFFFFF !important;}
-    
-    /* 隐藏图片上传后的默认文件名，让界面更清爽 */
-    .uploadedFile {display: none;}
+    .main-title {
+        font-size: 2.5rem; 
+        color: #0F52BA; /* 宝马蓝，专业且清晰 */
+        text-align: center; 
+        font-weight: bold;
+    }
+    .sub-title {
+        font-size: 1.1rem; 
+        color: #555; 
+        text-align: center; 
+        margin-bottom: 20px;
+    }
+    .answer-area {
+        background-color: #F0F2F6; 
+        padding: 20px; 
+        border-radius: 10px; 
+        border-left: 5px solid #0F52BA; 
+        color: #31333F;
+        font-family: sans-serif;
+        line-height: 1.6;
+    }
+    /* 隐藏部分干扰元素 */
+    .stDeployButton {display:none;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -55,7 +70,7 @@ SUBJECT_TASKS = {
 }
 
 # ================= 4. Cookie =================
-cookie_manager = stx.CookieManager(key="mobile_cookie_v3_6")
+cookie_manager = stx.CookieManager(key="cookie_fix_v3_7")
 
 # ================= 5. 验证逻辑 =================
 def connect_db():
@@ -114,28 +129,31 @@ def auto_login_check():
     except: pass
     return False, None
 
-# ================= 6. 图像处理与AI (内存优化版) =================
+# ================= 6. 图像处理与AI =================
 
 def process_image_safe(image_file):
     """安全处理：压缩与增强，防止内存溢出"""
     try:
+        # 重置文件指针，防止读取错误
         image_file.seek(0)
         img_obj = Image.open(image_file)
         
-        # 1. 修正旋转 (手机拍照常见问题)
+        # 1. 修正旋转
         img_obj = ImageOps.exif_transpose(img_obj)
         
-        # 2. 强力压缩：将宽/高限制在 1200px 以内
-        # 1200px 对于 OCR 足够清晰，但内存占用只有原图的 1/10
+        # 2. 格式转换：强制转为 RGB，防止 PNG 透明通道报错
+        if img_obj.mode != 'RGB':
+            img_obj = img_obj.convert('RGB')
+        
+        # 3. 强力压缩：将宽/高限制在 1200px 以内
         img_obj.thumbnail((1200, 1200))
         
-        # 3. 增强对比度 (弥补压缩损失)
+        # 4. 增强对比度
         enhancer = ImageEnhance.Contrast(img_obj)
         img_obj = enhancer.enhance(1.5)
         
         return img_obj
     except Exception as e:
-        st.error(f"图片处理失败: {e}")
         return None
 
 def ocr_general(image_obj, subject):
@@ -143,8 +161,7 @@ def ocr_general(image_obj, subject):
     client = ZhipuAI(api_key=ZHIPU_KEY)
     
     buffered = io.BytesIO()
-    # 存为 JPEG，质量 80，进一步省内存
-    image_obj.save(buffered, format="JPEG", quality=80) 
+    image_obj.save(buffered, format="JPEG", quality=85) 
     img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
     
     prompt = f"""
@@ -187,12 +204,18 @@ def ai_tutor_brain(question_text, subject, task_type):
         return res.choices[0].message.content
     except Exception as e: return f"AI思考失败: {str(e)}"
 
+def load_image(path):
+    import os
+    if os.path.exists(path): return Image.open(path)
+    return None
+
 # ================= 7. 界面逻辑 =================
 
 is_logged_in, current_user = auto_login_check()
 
 with st.sidebar:
     st.markdown("## 🔐 赛博学霸通行证")
+    
     if is_logged_in:
         st.success(f"🟢 已登录")
         if st.button("🚪 安全退出", type="secondary", use_container_width=True):
@@ -217,10 +240,29 @@ with st.sidebar:
                     st.rerun()
                 else:
                     st.error(msg)
+    
     st.divider()
-    with st.expander("💎 开通会员", expanded=True):
-        st.info("扫码支付后，截图加微信领卡密")
-        # 略过图片加载
+    
+    # 💎 修复：确保二维码显示
+    with st.expander("💎 开通会员 (查看价格)", expanded=True):
+        st.markdown("""
+        | 套餐类型 | 价格 | 适用 |
+        | :--- | :--- | :--- |
+        | **⚡ 体验卡** | **¥ 9.9** | 临时 |
+        | **📅 学霸月卡** | **¥ 49.9** | 冲刺 |
+        | **🥇 硕博年卡** | **¥ 299** | 长期 |
+        """)
+        
+        pay_method = st.radio("支付方式:", ["微信支付", "支付宝"], horizontal=True)
+        try:
+            if pay_method == "微信支付":
+                st.image("pay_wechat.png", caption="请备注：手机号")
+            else:
+                st.image("pay_alipay.png", caption="请备注：手机号")
+        except:
+            st.warning("请检查图片是否上传至GitHub根目录")
+            
+        st.markdown(f"**客服微信**: `{MY_WECHAT}`")
 
 # 主界面
 st.markdown("<div class='main-title'>🧬 赛博学霸 Pro</div>", unsafe_allow_html=True)
@@ -228,49 +270,53 @@ st.markdown("<div class='sub-title'>DeepSeek × GLM-4V | 大学生/考研/科研
 
 if is_logged_in:
     with st.container(border=True):
-        # 手机端把科目选择放在上面
-        subject = st.selectbox("📚 选择专业", list(SUBJECT_TASKS.keys()))
-        task = st.selectbox("📝 选择模式", SUBJECT_TASKS[subject])
+        c1, c2 = st.columns(2)
+        with c1:
+            subject = st.selectbox("📚 选择专业", list(SUBJECT_TASKS.keys()))
+        with c2:
+            task = st.selectbox("📝 选择模式", SUBJECT_TASKS[subject])
     
-    # 📸 极简上传模块 (防闪退核心)
-    st.info("💡 **提示**：点击下方按钮 -> 选择【相机】拍摄更清晰。")
+    # ================= 📸 修复版上传模块 (双保险) =================
+    st.markdown("### 📤 上传题目")
     
-    # 只保留一个入口，减少混淆
-    uploaded_file = st.file_uploader("📤 点击拍摄/上传题目", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
+    # 使用 Tabs，把选择权还给用户
+    # Tab 1: 浏览文件 (有些手机能调起相机，有些是相册)
+    # Tab 2: 网页相机 (必杀技，一定能拍照)
+    tab1, tab2 = st.tabs(["📂 相册/文件 (推荐)", "📸 网页相机 (备用)"])
+    
+    final_image = None
+    
+    with tab1:
+        uploaded_file = st.file_uploader(
+            "选择图片 (支持高清图)", 
+            type=["jpg", "png", "jpeg"], 
+            key="uploader_tab1"
+        )
+        if uploaded_file: final_image = uploaded_file
+        
+    with tab2:
+        camera_file = st.camera_input("点击下方按钮拍照")
+        if camera_file: final_image = camera_file
 
-    if uploaded_file:
+    if final_image:
         st.markdown("---")
         
-        # 🔥 核心改变：不直接显示大图！只显示文件名和大小
-        # 这样浏览器就不会去渲染 10MB 的图片，从而避免闪退
-        file_size_mb = uploaded_file.size / (1024 * 1024)
-        st.success(f"✅ 图片已接收 ({file_size_mb:.2f} MB)")
+        # 预处理图片
+        img_obj = process_image_safe(final_image)
         
-        # 按钮也是大大的，方便点击
-        if st.button("🚀 立即开始分析", type="primary", use_container_width=True):
+        if img_obj:
+            # 显示小图，防止内存溢出
+            st.image(img_obj, caption="✅ 图片已就绪", width=300)
             
-            # 进度条
-            progress = st.progress(0)
-            status = st.empty()
-            
-            # Step 1: 后台静默处理图片
-            status.write("⚙️ 正在优化图像画质...")
-            img_obj = process_image_safe(uploaded_file)
-            
-            if img_obj:
-                # 此时图片已经变小了，可以安全地展示一个小缩略图给用户看一眼
-                st.image(img_obj, caption="图像已增强", width=300) # 限制宽度
+            if st.button("🚀 启动科研引擎", type="primary", use_container_width=True):
+                progress = st.progress(0)
+                status = st.empty()
                 
-                # Step 2: OCR
                 status.write("👀 视觉引擎正在提取信息...")
                 progress.progress(30)
+                
                 ocr_text = ocr_general(img_obj, subject)
                 
-                # 内存回收
-                del img_obj
-                gc.collect()
-                
-                # Step 3: DeepSeek
                 if "失败" not in ocr_text:
                     status.write(f"🧠 教授正在推导逻辑...")
                     progress.progress(70)
@@ -279,7 +325,8 @@ if is_logged_in:
                     progress.progress(100)
                     status.empty()
                     
-                    with st.expander("🔍 查看识别的题目文本"):
+                    # 结果展示区 (恢复正常配色)
+                    with st.expander("🔍 原始识别文本", expanded=False):
                         st.text(ocr_text)
                     
                     st.markdown(f"### 👩‍🏫 教授详细解析")
@@ -287,8 +334,15 @@ if is_logged_in:
                         st.markdown(ai_result)
                     st.balloons()
                 else:
-                    st.error("识别失败，请尝试重新拍摄更清晰的照片。")
-            else:
-                st.error("图片处理失败，请重试。")
+                    st.error("识别失败，图片可能太模糊。")
+        else:
+            st.error("图片处理出错，请重试。")
+            
 else:
     st.info("👋 欢迎！请在左侧输入卡密登录。")
+    st.markdown("""
+    ### 🚀 为什么你需要赛博学霸？
+    - **硬核学科**：高数、线代、模电、408... 
+    - **深度推导**：拒绝只有答案，提供完整推导过程。
+    - **考研神器**：随时随地的私人教授。
+    """)
