@@ -2,7 +2,7 @@ import streamlit as st
 import base64
 from zhipuai import ZhipuAI
 from openai import OpenAI
-from PIL import Image, ImageOps, ImageEnhance # 引入增强库
+from PIL import Image, ImageOps, ImageEnhance
 import io
 import json
 from github import Github, InputFileContent
@@ -11,52 +11,33 @@ import time
 import extra_streamlit_components as stx
 from datetime import datetime, timedelta
 
-# ================= 1. 页面基础配置 =================
+# ================= 1. 页面配置 =================
 st.set_page_config(
     page_title="赛博学霸 Pro",
     page_icon="🧬",
     layout="wide",
-    initial_sidebar_state="collapsed" # 手机端默认收起侧边栏，视野更大
+    initial_sidebar_state="collapsed"
 )
 
-# 自定义 CSS：针对移动端优化
+# 自定义 CSS
 st.markdown("""
 <style>
     .main-title {font-size: 2.2rem; color: #FFD700; text-align: center; font-weight: bold; text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);}
     .sub-title {font-size: 1rem; color: #B0BEC5; text-align: center; margin-bottom: 20px;}
-    .answer-area {
-        background-color: #1E1E1E; 
-        padding: 20px; 
-        border-radius: 8px; 
-        border-left: 5px solid #FFD700; 
-        color: #E0E0E0;
-        font-family: sans-serif; /* 手机端用通用字体更易读 */
-        line-height: 1.6;
-        font-size: 16px;
-    }
-    /* 优化上传按钮，使其更大更易点 */
-    [data-testid="stFileUploader"] {
-        padding: 20px;
-        border: 2px dashed #FFD700;
-        border-radius: 10px;
-        text-align: center;
-    }
-    /* 侧边栏样式 */
+    .answer-area {background-color: #1E1E1E; padding: 20px; border-radius: 8px; border-left: 5px solid #FFD700; color: #E0E0E0; font-family: sans-serif; line-height: 1.6;}
     [data-testid="stSidebar"] {background-color: #121212 !important; color: #FFFFFF !important;}
     .stTextInput input {background-color: #2C2C2C !important; color: #FFFFFF !important;}
 </style>
 """, unsafe_allow_html=True)
 
-# ================= 2. 核心配置区 =================
-
+# ================= 2. 核心配置 =================
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "") 
 GIST_ID = st.secrets.get("GIST_ID", "")
-
 ZHIPU_KEY = st.secrets.get("ZHIPU_KEY", "")
 DEEPSEEK_KEY = st.secrets.get("DEEPSEEK_KEY", "")
 MY_WECHAT = "Liao_Code_Master"
 
-# ================= 3. 硬核科目映射表 =================
+# ================= 3. 科目表 =================
 SUBJECT_TASKS = {
     "高等数学": ["极限与连续求解", "导数与微分推导", "不定积分/定积分", "微分方程求解", "级数收敛性判定"],
     "线性代数": ["矩阵运算与求逆", "行列式计算", "向量组与秩", "特征值与特征向量", "二次型化简"],
@@ -69,11 +50,10 @@ SUBJECT_TASKS = {
     "考研政治": ["马原原理辨析", "毛中特考点", "史纲时间线梳理", "时政热点分析"]
 }
 
-# ================= 4. Cookie 管理器 =================
-cookie_manager = stx.CookieManager(key="cookie_manager_mobile")
+# ================= 4. Cookie =================
+cookie_manager = stx.CookieManager(key="mobile_cookie")
 
-# ================= 5. 云端验证逻辑 =================
-
+# ================= 5. 验证逻辑 =================
 def connect_db():
     try:
         g = Github(GITHUB_TOKEN)
@@ -110,14 +90,11 @@ def activate_license(license_key):
             cookie_manager.set('user_license', license_key, expires_at=expires, key="set_lic")
         except: cookie_manager.set('user_license', license_key, key="set_lic")
         return True, f"✅ 激活成功！有效期至：{expire_date}"
-        
     elif record['status'] == 'USED':
         expire_date_str = record.get('expire_at', '2099-12-31')
-        if datetime.now().strftime("%Y-%m-%d") > expire_date_str:
-            return False, f"⚠️ 卡密已过期 ({expire_date_str})"
+        if datetime.now().strftime("%Y-%m-%d") > expire_date_str: return False, "⚠️ 卡密已过期"
         cookie_manager.set('user_license', license_key, key="set_lic")
-        return True, f"✅ 欢迎回来！有效期至：{expire_date_str}"
-        
+        return True, f"✅ 欢迎回来"
     return False, "❌ 状态异常"
 
 def auto_login_check():
@@ -126,46 +103,46 @@ def auto_login_check():
     try:
         cookies = cookie_manager.get_all()
         c_license = cookies.get('user_license')
-        if c_license and isinstance(c_license, str) and len(c_license) > 5:
+        if c_license and len(c_license) > 5:
             st.session_state['is_vip'] = True
             st.session_state['user_license'] = c_license
             return True, c_license
     except: pass
     return False, None
 
-# ================= 6. 图像增强与AI引擎 (核心优化点) =================
+# ================= 6. 图像处理与AI =================
 
-def enhance_image(image_obj):
-    """
-    图像增强引擎：专治手机拍照模糊、光线暗、对比度低
-    """
-    # 1. 修复旋转
+def process_image_mobile(image_obj):
+    """移动端图像优化：修正旋转 + 压缩尺寸 + 增强"""
+    # 1. 修正旋转
     image_obj = ImageOps.exif_transpose(image_obj)
     
-    # 2. 增强对比度 (让文字更黑，纸更白)
+    # 2. 智能压缩 (防止内存溢出)
+    # 如果宽或高超过 1500px，按比例缩小，保证清晰度同时减少内存占用
+    max_size = 1500
+    if image_obj.width > max_size or image_obj.height > max_size:
+        image_obj.thumbnail((max_size, max_size))
+        
+    # 3. 增强对比度 (针对试卷文字)
     enhancer = ImageEnhance.Contrast(image_obj)
-    image_obj = enhancer.enhance(1.5) # 提高50%对比度
-    
-    # 3. 增强锐度 (边缘更清晰)
-    enhancer = ImageEnhance.Sharpness(image_obj)
-    image_obj = enhancer.enhance(2.0) # 提高100%锐度
+    image_obj = enhancer.enhance(1.5)
     
     return image_obj
 
 def ocr_general(image_obj, subject):
-    """视觉引擎"""
-    if not ZHIPU_KEY: return "Error: ZHIPU_KEY 未配置"
+    if not ZHIPU_KEY: return "Error: Key未配置"
     client = ZhipuAI(api_key=ZHIPU_KEY)
     
     buffered = io.BytesIO()
-    image_obj.save(buffered, format="JPEG", quality=95) # 高质量保存
+    # 存为 JPEG 且质量设为 85，进一步减小体积
+    image_obj.save(buffered, format="JPEG", quality=85)
     img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
     
     prompt = f"""
     你是一个专业的学术OCR助手。请精准识别图片中的【{subject}】内容。
     【要求】：
     1. 所见即所得：直接输出识别内容。
-    2. 符号修正：如果图片模糊，请根据数学/物理上下文逻辑修正可能的识别错误。
+    2. 数学公式请使用 Markdown 格式（$符号包裹 LaTeX）。
     """
     try:
         res = client.chat.completions.create(
@@ -176,12 +153,11 @@ def ocr_general(image_obj, subject):
     except: return "图片识别失败"
 
 def ai_tutor_brain(question_text, subject, task_type):
-    """推理引擎"""
-    if not DEEPSEEK_KEY: return "Error: DEEPSEEK_KEY 未配置"
+    if not DEEPSEEK_KEY: return "Error: Key未配置"
     client = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
     
     strategy = "请进行深入的原理分析，逻辑必须严密。"
-    if "推导" in task_type: strategy = "请列出详细的推导步骤，引用相关定理。"
+    if "推导" in task_type: strategy = "请列出详细的推导步骤。"
     
     system_prompt = f"""
     你是一位【{subject}】领域的顶尖教授。当前任务：{task_type}。
@@ -216,7 +192,7 @@ with st.sidebar:
             except: pass
             st.session_state['is_vip'] = False
             st.session_state['force_logout'] = True
-            st.warning("正在退出...")
+            st.warning("退出中...")
             time.sleep(1)
             st.rerun()
     else:
@@ -236,7 +212,7 @@ with st.sidebar:
     st.divider()
     with st.expander("💎 开通会员", expanded=True):
         st.info("扫码支付后，截图加微信领卡密")
-        # 此处省略图片加载代码，保持简洁，逻辑不变
+        # 图片加载代码略
 
 # 主界面
 st.markdown("<div class='main-title'>🧬 赛博学霸 Pro</div>", unsafe_allow_html=True)
@@ -250,18 +226,40 @@ if is_logged_in:
         with c2:
             task = st.selectbox("📝 选择模式", SUBJECT_TASKS[subject])
     
-    # 💡 手机端操作指引
-    st.info("📸 **手机端使用技巧**：点击下方【Browse files】-> 选择【相机/拍摄】，即可调用原生高清相机，拍摄更清晰！")
+    # ================= 📸 移动端终极解决方案 =================
     
-    uploaded_file = st.file_uploader("📤 上传题目 (支持高清原图)", type=["jpg", "png", "jpeg"])
+    # 既然 Browse files 有时调不起相机，我们给两个入口
+    st.info("👇 **请根据您的需求选择上传方式**：")
+    
+    tab1, tab2 = st.tabs(["📂 浏览相册 (通用)", "📸 网页相机 (备用)"])
+    
+    final_image = None
+    
+    with tab1:
+        # 针对 Browse files，我们无法强制系统弹相机
+        # 但我们优化了后续的处理逻辑，保证大图不崩
+        uploaded_file = st.file_uploader(
+            "点击下方按钮选择图片 (支持高清图)", 
+            type=["jpg", "png", "jpeg"], 
+            key="file_uploader"
+        )
+        if uploaded_file: final_image = uploaded_file
+        
+    with tab2:
+        # 这是 Streamlit 原生的相机，虽然画质稍差，但胜在稳定
+        # 如果用户手机死活调不起系统相机，就让他用这个
+        camera_file = st.camera_input("直接调用网页相机")
+        if camera_file: final_image = camera_file
 
-    if uploaded_file:
+    if final_image:
         st.markdown("---")
-        # 💡 移动端布局优化：不再分栏，直接上下排列，图片更大
+        # 不分栏，保证手机端大图显示
         try:
-            img_obj = Image.open(uploaded_file)
-            # 自动画质增强
-            img_obj = enhance_image(img_obj)
+            img_obj = Image.open(final_image)
+            
+            # 🔥 核心：调用图像处理引擎 (防旋转+压缩+增强)
+            img_obj = process_image_mobile(img_obj)
+            
             st.image(img_obj, caption="已自动增强画质", use_container_width=True)
         except Exception as e:
             st.error(f"图片加载失败: {e}")
@@ -271,13 +269,13 @@ if is_logged_in:
             progress = st.progress(0)
             status = st.empty()
             
-            status.write("👀 视觉引擎正在提取信息 (GLM-4V)...")
+            status.write("👀 视觉引擎正在提取信息...")
             progress.progress(30)
             
             ocr_text = ocr_general(img_obj, subject)
             
             if "失败" not in ocr_text:
-                status.write(f"🧠 教授正在推导逻辑 (DeepSeek)...")
+                status.write(f"🧠 教授正在推导逻辑...")
                 progress.progress(70)
                 ai_result = ai_tutor_brain(ocr_text, subject, task)
                 
