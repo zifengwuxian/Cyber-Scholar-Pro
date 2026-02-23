@@ -1,0 +1,6 @@
+streamlit
+zhipuai
+openai
+Pillow
+PyGithub
+extra-streamlit-components
